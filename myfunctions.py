@@ -10,6 +10,15 @@ import re
 from sklearn.model_selection import GridSearchCV
 from matplotlib.ticker import MaxNLocator
 import matplotlib.ticker as ticker
+from itertools import compress
+from sklearn.feature_selection import RFE, r_regression, SelectKBest
+from sklearn.svm import SVR
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+import os
+import moviepy.video.io.ImageSequenceClip
+from natsort import natsorted
+from PIL import Image, ImageFilter
+
 
 
 
@@ -533,3 +542,188 @@ def interp_measurement(RF_time, glucose_data):
 
         new_glucose_df = pd.DataFrame(new_glucose, columns=['new glucose'])
     return new_glucose_df
+
+
+
+
+def read_raw_IR_data(path):
+    data_string = open(path).read()
+
+    #remove last line of string
+    data_string = data_string[:data_string.rfind('\n')]
+    New_string_ = data_string.split('\n')
+
+    #Get index and name of LED firing
+    positions = [ [i,x ]for i,x in enumerate(New_string_) if 'Firing LED' in x ]
+
+
+    #iterate over the 3 LEDs
+    LED_value = []
+    for i in positions:
+        index_LED = i[0]+2
+        name = i[1]
+        New_string = New_string_[index_LED]
+        data_tmp = io.StringIO(New_string)
+        data_list = list(New_string.split(','))
+        data_list = data_list[:-1]
+
+        data_ = [int(x) for x in data_list]
+
+        LED_value.append(data_)
+    LED_df = pd.DataFrame(data=LED_value)
+    LED_df = LED_df.T
+    LED_df.columns = ['LED_1','LED_2','LED_3']
+    return LED_df
+
+
+def remove_outlier(array, std_multiplier =2):
+
+    elements = np.array(array)
+
+    mean = np.median(elements, axis=0)
+    sd = np.std(elements, axis=0)
+
+    final_list = [x for x in array if (x > mean -std_multiplier*sd)]
+    final_list = [x for x in final_list if (x < mean + std_multiplier * sd)]
+
+    return final_list
+
+
+
+
+class VotingSelector():
+   def __init__(self):
+       self.selectors = {
+           "pearson": self._select_pearson,
+           "vif": self._select_vif,
+           "rfe": self._select_rfe,
+       }
+       self.votes = None
+
+   @staticmethod
+   def _select_pearson(X, y, **kwargs):
+       selector = SelectKBest(r_regression, k=kwargs.get("n_features_to_select", 5)).fit(X, y)
+       return selector.get_feature_names_out()
+
+   @staticmethod
+   def _select_vif(X, y, **kwargs):
+       return [
+           X.columns[feature_index]
+           for feature_index in range(len(X.columns))
+           if variance_inflation_factor(X.values, feature_index) <= kwargs.get("vif_threshold", 10)
+       ]
+
+   @staticmethod
+   def _select_rfe(X, y, **kwargs):
+       svr = SVR(kernel="linear")
+       rfe = RFE(svr, n_features_to_select=kwargs.get("n_features_to_select", 5))
+       rfe.fit(X, y)
+       return rfe.get_feature_names_out()
+
+   def select(self, X, y, voting_threshold=0.5, **kwargs):
+       votes = []
+       for selector_name, selector_method in self.selectors.items():
+           features_to_keep = selector_method(X, y, **kwargs)
+           votes.append(
+               pd.DataFrame([int(feature in features_to_keep) for feature in X.columns]).T
+           )
+       self.votes = pd.concat(votes)
+       self.votes.columns = X.columns
+       self.votes.index = self.selectors.keys()
+       features_to_keep = list(compress(X.columns, self.votes.mean(axis=0) > voting_threshold))
+       return X[features_to_keep]
+
+
+
+#Defining MAPE function
+def MARD(Y_actual,Y_Predicted):
+    mard = np.mean(np.abs(Y_actual - Y_Predicted)/Y_actual)*100
+    return mard
+
+def my_MSE(Y_actual,Y_Predicted):
+
+    Y_actual = Y_actual.to_numpy()
+    Y_Predicted = Y_Predicted.to_numpy()
+    error = Y_actual-Y_Predicted
+    mse = np.square(error).mean()
+    return mse
+
+
+def my_RMSE(Y_actual,Y_Predicted):
+
+    #mse = my_MSE(Y_actual,Y_Predicted)
+    RMSE  = np.sqrt(np.mean((Y_actual - Y_Predicted) ** 2))
+
+    return RMSE
+
+
+
+def my_linear_plot_regression(y_test,y_pred,metrics=None):
+
+    figure, ax = plt.subplots(figsize=(10,10))
+
+    ax.scatter(y_test,y_pred)
+
+
+
+    p1 = max(max(y_pred), max(y_test))
+    p2 = min(min(y_pred), min(y_test))
+
+    ax.plot([p1,p2], [p1,p2], 'b-')
+    ax.set_xlabel('True Glucose (mg/dl)',fontsize = 15)
+    ax.set_ylabel('Predicted Glucose (mg/dl)',fontsize = 15)
+    ax.grid()
+    ax.axis('equal')
+    ax.set_title('Measurments vs predictions')
+
+    if metrics:
+        labels_ = []
+        MSE = metrics['MSE']
+        MAPE = metrics['MAPE']
+
+        labels_.append("RMSE = {0:.2g}".format(MSE))
+        labels_.append("MARD = {0:.2g}%".format(MAPE))
+
+
+        at = AnchoredText(
+            '\n'.join(labels_), prop=dict(size=15), frameon=True, loc='upper left')
+        at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
+        ax.add_artist(at)
+    #plt.show()
+
+    return figure
+
+
+
+def images_to_video(path, output_name):
+
+    """
+    Function that convert jpeg images to an mp4 video
+    THis function takes in two parameters, the path of the file and the outputname of the video
+
+    :param path:
+    :param output_name:
+    :return:
+    """
+    image_folder = path
+    oputput_video_file = os.path.join(path , output_name +'.mp4')
+
+    fps = 1
+
+    image_files = [os.path.join(image_folder, img)
+                   for img in os.listdir(image_folder)
+                   if img.endswith(".png")]
+    image_files = natsorted(image_files)
+
+    clip = moviepy.video.io.ImageSequenceClip.ImageSequenceClip(image_files, fps=fps)
+    clip.write_videofile(oputput_video_file)
+    
+    
+    
+
+
+
+
+
+
+
