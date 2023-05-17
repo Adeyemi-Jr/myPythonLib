@@ -695,18 +695,25 @@ def my_linear_plot_regression(y_test,y_pred,metrics=None):
 
 
 
-def images_to_video(path, output_name):
+def images_to_video(path, output_name, output_path = 0):
 
     """
     Function that convert jpeg images to an mp4 video
-    THis function takes in two parameters, the path of the file and the outputname of the video
+    THis function takes in 3 parameters, the path of the file and the outputname of the video
 
     :param path:
     :param output_name:
     :return:
     """
     image_folder = path
-    oputput_video_file = os.path.join(path , output_name +'.mp4')
+
+
+    if output_path != 0:
+        path_ = output_path
+        oputput_video_file = os.path.join(path_ , output_name +'.mp4')
+    else:
+        oputput_video_file = os.path.join(path , output_name +'.mp4')
+
 
     fps = 1
 
